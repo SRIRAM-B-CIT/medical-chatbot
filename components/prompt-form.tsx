@@ -1,7 +1,6 @@
 import { UseChatHelpers } from 'ai/react'
 import * as React from 'react'
 import Textarea from 'react-textarea-autosize'
-import { useUser } from '@clerk/nextjs'
 
 import { Button, buttonVariants } from '@/components/ui/button'
 import { IconArrowElbow, IconPlus } from '@/components/ui/icons'
@@ -30,7 +29,6 @@ export function PromptForm({
   const { formRef, onKeyDown } = useEnterSubmit()
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
   const router = useRouter()
-  const { isSignedIn, user } = useUser()
 
   React.useEffect(() => {
     if (inputRef.current) {
@@ -51,16 +49,6 @@ export function PromptForm({
       ref={formRef}
     >
       <div className="relative flex max-h-60 w-full grow flex-col overflow-hidden bg-background px-8 sm:rounded-md sm:border sm:px-12">
-        {(!isSignedIn || !user) && (
-          <div className=" absolute inset-0 z-20 flex h-full w-full items-center justify-center bg-white">
-            <div className="flex flex-col items-center space-y-2">
-              <p className="text-center text-sm text-black">
-                You need to be signed in to chat with me.{' '}
-                <Link href="/sign-in?callbackUrl=/" className="underline">Login</Link>
-              </p>
-            </div>
-          </div>
-        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -81,7 +69,6 @@ export function PromptForm({
           <TooltipContent>New Chat</TooltipContent>
         </Tooltip>
         <Textarea
-          disabled={!isSignedIn}
           ref={inputRef}
           tabIndex={0}
           onKeyDown={onKeyDown}
@@ -90,10 +77,7 @@ export function PromptForm({
           onChange={e => setInput(e.target.value)}
           placeholder="Send a message."
           spellCheck={false}
-          className={cn(
-            'min-h-[60px] w-full resize-none bg-transparent px-4 py-[1.3rem] focus-within:outline-none sm:text-sm',
-            isSignedIn ? '' : 'cursor-not-allowed'
-          )}
+          className="min-h-[60px] w-full resize-none bg-transparent px-4 py-[1.3rem] focus-within:outline-none sm:text-sm"
         />
         <div className="absolute right-0 top-4 sm:right-4">
           <Tooltip>

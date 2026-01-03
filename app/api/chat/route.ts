@@ -1,103 +1,96 @@
-import { OpenAIStream, StreamingTextResponse } from 'ai'
-import { Configuration, OpenAIApi } from 'openai-edge'
-import { Redis } from '@upstash/redis'
-import { auth } from '@clerk/nextjs'
+import { StreamingTextResponse } from 'ai'
+import { GoogleGenerativeAI } from '@google/generative-ai'
 
-import { nanoid } from '@/lib/utils'
 import { System01Intake } from '@/prompts/system'
 
 export const runtime = 'edge'
 
-const redis = new Redis({
-  url: process.env.UPSTASH_URL as string,
-  token: process.env.UPSTASH_TOKEN as string
-})
-
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY
-})
-
-const openai = new OpenAIApi(configuration)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string)
 
 export async function POST(req: Request) {
   const json = await req.json()
   const { messages } = json
-  const { userId } = auth()
 
-  if (!userId) {
-    return new Response('Unauthorized', {
-      status: 401
+  // Create an AbortController to handle client disconnections
+  const abortController = new AbortController()
+
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+
+    const chat = model.startChat({
+      history: [
+        {
+          role: 'user',
+          parts: [{ text: 'System instructions: ' + System01Intake }]
+        },
+        {
+          role: 'model',
+          parts: [{ text: 'I understand. I will ask 2-3 follow-up questions before providing a concise assessment.' }]
+        },
+        ...messages
+          .slice(0, -1)
+          .map((msg: any) => ({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: [{ text: msg.content }]
+          }))
+      ],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 1024
+      }
     })
-  }
 
-  const save = async (completion?: string) => {
-    const title = json.messages[0].content.substring(0, 100)
-    const id = json.id ?? nanoid()
-    const createdAt = Date.now()
-    const path = `/chat/${id}`
-    const payload = {
-      id,
-      title,
-      userId,
-      createdAt,
-      path,
-      messages: [
-        ...messages,
-        ...(completion
-          ? [
-              {
-                content: completion,
-                role: 'assistant'
-              }
-            ]
-          : [])
-      ]
-    }
+    const userMessage = messages[messages.length - 1].content
 
-    try {
-      await Promise.all([
-        redis.hmset(`chat:${id}`, payload),
-        redis.zadd(`user:chat:${userId}`, {
-          score: createdAt,
-          member: `chat:${id}`
-        })
-      ])
-    } catch (error) {
-      console.error('error saving chat to redis', error)
-    }
-  }
-
-  if (messages && messages.length === 13) {
-    save()
-    return new Response('', {
-      status: 201
-    })
-  }
-
-  const res = await openai.createChatCompletion({
-    model: 'gpt-4o',
-    messages: [
-      {
-        content: System01Intake,
-        role: 'system'
+    const readable = new ReadableStream({
+      async start(controller) {
+        try {
+          const result = await chat.sendMessageStream(userMessage)
+          for await (const chunk of result.stream) {
+            if (abortController.signal.aborted) {
+              controller.close()
+              return
+            }
+            const text = chunk.text()
+            controller.enqueue(new TextEncoder().encode(text))
+          }
+          controller.close()
+        } catch (error: any) {
+          // Ignore abort errors - these happen when client disconnects
+          if (error?.code === 'ECONNRESET' || error?.name === 'AbortError') {
+            console.log('Client disconnected')
+            controller.close()
+            return
+          }
+          console.error('Streaming error:', error)
+          controller.error(error)
+        }
       },
-      ...messages
-    ],
-    temperature: 0,
-    stream: true
-  })
-
-  if (!res.ok) {
-    return new Response('Error', {
-      status: 500
+      cancel() {
+        abortController.abort()
+      }
     })
-  }
 
-  const stream = OpenAIStream(res, {
-    async onCompletion(completion) {
-      save(completion)
+    return new StreamingTextResponse(readable)
+  } catch (error: any) {
+    // Ignore connection reset errors
+    if (error?.code === 'ECONNRESET') {
+      return new Response('Client disconnected', { status: 499 })
     }
-  })
-
-  return new StreamingTextResponse(stream)
+    
+    // Handle rate limit errors
+    if (error?.message?.includes('429') || error?.message?.includes('quota')) {
+      console.error('Rate limit exceeded:', error)
+      return new Response(
+        JSON.stringify({ error: 'Rate limit exceeded. Please wait a moment and try again.' }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+    
+    console.error('Chat error:', error)
+    return new Response(
+      JSON.stringify({ error: 'An error occurred. Please try again.' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
 }

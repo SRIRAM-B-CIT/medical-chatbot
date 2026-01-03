@@ -23,7 +23,6 @@ import { BOT_STEPS } from '@/lib/types'
 import { DisclaimerText } from './disclaimer-text'
 import { Button } from './ui/button'
 import Image from 'next/image'
-import { useAuth } from '@clerk/nextjs'
 
 const BOT_STEP_ORDER: BOT_STEPS[] = [
   'INTAKE',
@@ -45,7 +44,6 @@ export function Chat({
   step = 'INTAKE',
   className
 }: ChatProps) {
-  const { userId } = useAuth()
   const [currentStep, setCurrentStep] = useState<BOT_STEPS>(step)
   const [medicalResponses, setMedicalResponses] = useState<Message[]>([])
   const [loadDialog, setLoadDialog] = useState(false)
@@ -66,15 +64,19 @@ export function Chat({
       if (response.status === 401) {
         toast.error('Please login to continue')
       }
+      if (response.status === 429) {
+        toast.error('Rate limit exceeded. Please wait a moment and try again.')
+      }
       if (response.status === 201) {
         goToNextStep()
       }
     },
-    onError() {
-      if (!userId) {
-        return null
+    onError(error) {
+      if (error.message?.includes('429') || error.message?.includes('rate')) {
+        toast.error('Rate limit exceeded. Please wait a moment and try again.')
+      } else {
+        toast.error('An error occurred. Please try again later.')
       }
-      toast.error('An error occurred. Please try again later.')
     },
     onFinish() {
       if (!path.includes('chat')) {

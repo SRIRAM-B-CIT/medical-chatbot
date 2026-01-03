@@ -1,9 +1,6 @@
-import { OpenAIStream, StreamingTextResponse } from 'ai'
-import { Configuration, OpenAIApi } from 'openai-edge'
-import { Redis } from '@upstash/redis'
-import { auth } from '@clerk/nextjs'
+import { StreamingTextResponse } from 'ai'
+import { GoogleGenerativeAI } from '@google/generative-ai'
 
-import { nanoid } from '@/lib/utils'
 import {
   System02PrepareNotes,
   System03Diagnosis,
@@ -14,32 +11,12 @@ import { BOT_STEPS } from '@/lib/types'
 
 export const runtime = 'edge'
 
-const redis = new Redis({
-  url: process.env.UPSTASH_URL as string,
-  token: process.env.UPSTASH_TOKEN as string
-})
-
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY
-})
-
-const openai = new OpenAIApi(configuration)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string)
 
 interface Message {
   id: string
   role: string
   content: string
-}
-
-type PayloadType = {
-  id: string
-  title: string
-  userId: string
-  createdAt: number
-  path: string
-  step: string
-  messages: Message[]
-  notes?: string
 }
 
 const convertMessagesToTextBlock = (messages: Message[]): string => {
@@ -55,20 +32,11 @@ export async function POST(req: Request) {
   const json = await req.json()
   const {
     messages,
-    id,
     step
   }: {
     messages: any
-    id: string
     step: BOT_STEPS
   } = json
-  const { userId } = auth()
-
-  if (!userId) {
-    return new Response('Unauthorized', {
-      status: 401
-    })
-  }
 
   if (!step) {
     return new Response('Missing step', {
@@ -87,72 +55,71 @@ export async function POST(req: Request) {
       break
     case 'DIAGNOSIS':
       systemPrompt = System03Diagnosis
-      prompt = messages.filter(
+      const diagnosisMsg = messages.find(
         (message: Message) => message.id === 'PREPARE_NOTES'
-      )[0].content
+      )
+      prompt = diagnosisMsg?.content || ''
       break
     case 'CLINICAL':
       systemPrompt = System04Clinical
-      prompt = messages.filter(
+      const clinicalMsg = messages.find(
         (message: Message) => message.id === 'PREPARE_NOTES'
-      )[0].content
+      )
+      prompt = clinicalMsg?.content || ''
       break
     case 'REFERRAL':
       systemPrompt = System05Referrals
-      prompt = messages.filter(
+      const referralMsg = messages.find(
         (message: Message) => message.id === 'PREPARE_NOTES'
-      )[0].content
+      )
+      prompt = referralMsg?.content || ''
       break
     default:
       systemPrompt = System02PrepareNotes
       prompt = ''
   }
 
-  const res = await openai.createChatCompletion({
-    model: 'gpt-4o',
-    messages: [
-      {
-        content: systemPrompt,
-        role: 'system'
-      },
-      {
-        role: 'user',
-        content: prompt
-      }
-    ],
-    temperature: 0,
-    stream: true
-  })
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
-  const stream = OpenAIStream(res, {
-    async onCompletion(completion) {
-      const title = json.messages[0].content.substring(0, 100)
-      const id = json.id ?? nanoid()
-      const createdAt = Date.now()
-      const path = `/chat/${id}`
-      let payload: PayloadType = {
-        id,
-        title,
-        userId,
-        createdAt,
-        path,
-        step,
-        messages: [
-          ...messages,
-          {
-            id: step,
-            content: completion,
-            role: 'assistant'
+    const readable = new ReadableStream({
+      async start(controller) {
+        try {
+          const result = await model.generateContentStream({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text: `${systemPrompt}\n\n${prompt}`
+                  }
+                ]
+              }
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 4096
+            }
+          })
+
+          for await (const chunk of result.stream) {
+            const text = chunk.text()
+            controller.enqueue(new TextEncoder().encode(text))
           }
-        ]
-      }
-      await redis.hmset(`chat:${id}`, payload)
-      await redis.zadd(`user:chat:${userId}`, {
-        score: createdAt,
-        member: `chat:${id}`
-      })
-    }
-  })
 
-  return new StreamingTextResponse(stream)
+          controller.close()
+        } catch (error) {
+          console.error('Streaming error:', error)
+          controller.error(error)
+        }
+      }
+    })
+
+    return new StreamingTextResponse(readable)
+  } catch (error) {
+    console.error('Med-bot error:', error)
+    return new Response('Error', {
+      status: 500
+    })
+  }
 }
