@@ -80,7 +80,7 @@ export function Chat({
     },
     onFinish() {
       if (!path.includes('chat')) {
-        router.push(`/chat/${id}`, { shallow: true })
+        window.history.replaceState(null, '', `/chat/${id}`)
         router.refresh()
       }
     }

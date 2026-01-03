@@ -44,8 +44,9 @@ export async function POST(req: Request) {
     })
   }
 
-  let systemPrompt
-  let prompt
+  let systemPrompt: string;
+  let prompt: string;
+
   switch (step) {
     case 'PREPARE_NOTES':
       systemPrompt = System02PrepareNotes
